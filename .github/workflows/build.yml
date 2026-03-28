@@ -1,0 +1,95 @@
+name: Build and Release
+
+on:
+  push:
+    branches: [master]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Build exe
+        run: >
+          pyinstaller
+          --onefile
+          --windowed
+          --paths src
+          --name SwedishLectureTranscriber
+          src/main.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-exe
+          path: dist/SwedishLectureTranscriber.exe
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PortAudio
+        run: brew install portaudio
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Build .app bundle
+        run: >
+          pyinstaller
+          --windowed
+          --paths src
+          --name SwedishLectureTranscriber
+          src/main.py
+
+      - name: Zip .app bundle
+        run: cd dist && zip -r SwedishLectureTranscriber-mac.zip SwedishLectureTranscriber.app
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-app
+          path: dist/SwedishLectureTranscriber-mac.zip
+
+  release:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-exe
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-app
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.run_number }}
+          name: "Build ${{ github.run_number }}"
+          body: |
+            Automated build from commit ${{ github.sha }}
+
+            **Windows:** Download `SwedishLectureTranscriber.exe`
+            **macOS:** Download `SwedishLectureTranscriber-mac.zip`, unzip, and move the `.app` to Applications
+          files: |
+            SwedishLectureTranscriber.exe
+            SwedishLectureTranscriber-mac.zip
