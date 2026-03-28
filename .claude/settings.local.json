@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx @claude-flow/cli@latest swarm init --topology hierarchical --max-agents 8 --strategy specialized)"
+    ]
+  }
+}
