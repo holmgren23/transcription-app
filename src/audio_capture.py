@@ -18,9 +18,11 @@ class AudioCapture:
 
     def __init__(self) -> None:
         self.recording = False
+        self.paused = False
         self.frames: list = []
         self._thread: Optional[threading.Thread] = None
         self._error: Optional[str] = None
+        self._device: Optional[int] = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -29,8 +31,28 @@ class AudioCapture:
     def start(self, device: Optional[int] = None) -> None:
         """Begin recording from *device* (None = default input)."""
         self.recording = True
+        self.paused = False
         self.frames = []
         self._error = None
+        self._device = device
+        self._thread = threading.Thread(
+            target=self._record_loop, args=(device,), daemon=True
+        )
+        self._thread.start()
+
+    def pause(self) -> None:
+        """Pause capture — stops the stream but keeps all frames so far."""
+        self.recording = False
+        self.paused = True
+        if self._thread:
+            self._thread.join(timeout=3)
+
+    def resume(self, device: Optional[int] = None) -> None:
+        """Resume capture after a pause, appending to existing frames."""
+        if device is None:
+            device = self._device
+        self.recording = True
+        self.paused = False
         self._thread = threading.Thread(
             target=self._record_loop, args=(device,), daemon=True
         )
@@ -39,6 +61,7 @@ class AudioCapture:
     def stop(self) -> str:
         """Stop recording and return path to a temporary WAV file."""
         self.recording = False
+        self.paused = False
         if self._thread:
             self._thread.join(timeout=5)
         if self._error:

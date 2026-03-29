@@ -65,6 +65,7 @@ class TranscriptionApp:
         self.root = root
         self.capturer = AudioCapture()
         self._is_recording = False
+        self._is_paused = False
         self._audio_file: Optional[str] = None
         self._upload_file: Optional[str] = None
 
@@ -199,6 +200,21 @@ class TranscriptionApp:
             command=self._toggle_record,
         )
         self._rec_btn.pack(side="left")
+
+        self._pause_btn = tk.Button(
+            rec_frame,
+            text="⏸  Pause",
+            font=FONT_BUTTON,
+            bg=BG_PANEL,
+            fg=FG,
+            relief="flat",
+            padx=12,
+            pady=8,
+            cursor="hand2",
+            state="disabled",
+            command=self._toggle_pause,
+        )
+        self._pause_btn.pack(side="left", padx=(8, 0))
 
         self._rec_status = tk.Label(
             rec_frame,
@@ -555,9 +571,9 @@ Whisper model, which handles Swedish lectures with high accuracy.
         device = None if selected == "Default" else self._device_map.get(selected)
 
         self._is_recording = True
-        self._rec_btn.configure(
-            text="⏹  Stop Recording", bg=DANGER, fg=BG
-        )
+        self._is_paused = False
+        self._rec_btn.configure(text="⏹  Stop Recording", bg=DANGER, fg=BG)
+        self._pause_btn.configure(state="normal", text="⏸  Pause", bg=BG_PANEL, fg=FG)
         self._rec_status.configure(text="Recording…", fg=DANGER)
         self._rec_transcribe_btn.configure(state="disabled")
 
@@ -565,9 +581,9 @@ Whisper model, which handles Swedish lectures with high accuracy.
 
     def _stop_recording(self) -> None:
         self._is_recording = False
-        self._rec_btn.configure(
-            text="⏺  Start Recording", bg=ACCENT, fg=BG
-        )
+        self._is_paused = False
+        self._rec_btn.configure(text="⏺  Start Recording", bg=ACCENT, fg=BG)
+        self._pause_btn.configure(state="disabled", text="⏸  Pause", bg=BG_PANEL, fg=FG)
         self._rec_status.configure(text="Processing…", fg=WARNING)
 
         def finish() -> None:
@@ -587,6 +603,26 @@ Whisper model, which handles Swedish lectures with high accuracy.
                 self.root.after(0, lambda: self._show_error(msg))
 
         threading.Thread(target=finish, daemon=True).start()
+
+    def _toggle_pause(self) -> None:
+        if not self._is_paused:
+            self._pause_recording()
+        else:
+            self._resume_recording()
+
+    def _pause_recording(self) -> None:
+        self._is_paused = True
+        self._pause_btn.configure(text="▶  Resume", bg=WARNING, fg=BG)
+        self._rec_status.configure(text="Paused", fg=WARNING)
+        threading.Thread(target=self.capturer.pause, daemon=True).start()
+
+    def _resume_recording(self) -> None:
+        self._is_paused = False
+        self._pause_btn.configure(text="⏸  Pause", bg=BG_PANEL, fg=FG)
+        self._rec_status.configure(text="Recording…", fg=DANGER)
+        selected = self._device_var.get()
+        device = None if selected == "Default" else self._device_map.get(selected)
+        self.capturer.resume(device=device)
 
     def _transcribe_recording(self) -> None:
         if not self._audio_file:
@@ -650,8 +686,11 @@ Whisper model, which handles Swedish lectures with high accuracy.
 
     def _show_result(self, text: str) -> None:
         self._set_progress("")
-        self._output_text.delete("1.0", "end")
-        self._output_text.insert("1.0", text)
+        existing = self._output_text.get("1.0", "end").strip()
+        if existing:
+            self._output_text.insert("end", "\n\n" + text)
+        else:
+            self._output_text.insert("end", text)
 
     def _show_error(self, message: str) -> None:
         self._set_progress("")
