@@ -33,7 +33,7 @@ jobs:
           path: dist/SwedishLectureTranscriber.exe
 
   build-macos:
-    runs-on: macos-14
+    runs-on: macos-13
     steps:
       - uses: actions/checkout@v4
 
@@ -48,13 +48,10 @@ jobs:
         run: pip install -r requirements.txt pyinstaller
 
       - name: Build .app bundle
-        env:
-          ARCHFLAGS: "-arch x86_64"
         run: >
           pyinstaller
           --windowed
           --paths src
-          --target-arch x86_64
           --name SwedishLectureTranscriber
           src/main.py
 
