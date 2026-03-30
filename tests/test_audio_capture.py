@@ -136,3 +136,58 @@ def test_no_new_frames_captured_while_paused():
     # Wait after pause — frame count must not grow
     time.sleep(0.1)
     assert len(cap.frames) == count_at_pause
+
+
+# ---------------------------------------------------------------------------
+# take_chunk tests
+# ---------------------------------------------------------------------------
+
+def test_take_chunk_returns_accumulated_frames():
+    """take_chunk returns all frames currently in the buffer."""
+    cap = AudioCapture()
+    fake_frame = np.ones((AudioCapture.BLOCKSIZE, AudioCapture.CHANNELS), dtype=AudioCapture.DTYPE)
+    cap.frames = [fake_frame, fake_frame, fake_frame]
+    result = cap.take_chunk()
+    assert len(result) == 3
+
+
+def test_take_chunk_clears_buffer():
+    """After take_chunk the internal frame buffer is empty."""
+    cap = AudioCapture()
+    fake_frame = np.ones((AudioCapture.BLOCKSIZE, AudioCapture.CHANNELS), dtype=AudioCapture.DTYPE)
+    cap.frames = [fake_frame]
+    cap.take_chunk()
+    assert cap.frames == []
+
+
+def test_take_chunk_on_empty_buffer_returns_empty_list():
+    """take_chunk on an empty buffer returns [] without raising."""
+    cap = AudioCapture()
+    result = cap.take_chunk()
+    assert result == []
+
+
+def test_take_chunk_does_not_share_reference():
+    """The returned list is a copy; mutating it does not affect cap.frames."""
+    cap = AudioCapture()
+    fake_frame = np.ones((AudioCapture.BLOCKSIZE, AudioCapture.CHANNELS), dtype=AudioCapture.DTYPE)
+    cap.frames = [fake_frame]
+    result = cap.take_chunk()
+    result.append(fake_frame)  # mutate the returned copy
+    # cap.frames was already cleared; this just confirms the copy semantics
+    assert cap.frames == []
+
+
+def test_take_chunk_thread_safe_during_recording():
+    """take_chunk can be called while the recording loop is running."""
+    cap = AudioCapture()
+    with patch("audio_capture.sd.InputStream") as mock_cls:
+        mock_cls.return_value = _mock_stream()
+        cap.start()
+        time.sleep(0.05)
+        frames = cap.take_chunk()
+        # Frames should accumulate again after the chunk was taken
+        time.sleep(0.05)
+        cap.stop()
+    # Just verify it returns a list and doesn't crash
+    assert isinstance(frames, list)

@@ -9,6 +9,7 @@ from typing import Optional
 
 # Sibling imports (src/ is already on sys.path via main.py)
 from audio_capture import AudioCapture
+from chunked_transcription import ChunkedTranscriptionManager
 from config import load_api_key, save_api_key
 from transcription import transcribe
 
@@ -68,6 +69,7 @@ class TranscriptionApp:
         self._is_paused = False
         self._audio_file: Optional[str] = None
         self._upload_file: Optional[str] = None
+        self._chunk_manager: Optional[ChunkedTranscriptionManager] = None
 
         self._setup_window()
         _configure_styles(root)
@@ -579,6 +581,21 @@ Whisper model, which handles Swedish lectures with high accuracy.
 
         self.capturer.start(device=device)
 
+        # Start chunked transcription: every 10 minutes send accumulated audio
+        # to Whisper and append the result while recording continues.
+        self._chunk_manager = ChunkedTranscriptionManager(
+            capturer=self.capturer,
+            api_key=api_key,
+            on_chunk=lambda text: self.root.after(
+                0, lambda t=text: self._show_result(t)
+            ),
+            on_error=lambda msg: self.root.after(
+                0, lambda m=msg: self._set_progress(f"Chunk error: {m}")
+            ),
+            interval=600,
+        )
+        self._chunk_manager.start()
+
     def _stop_recording(self) -> None:
         self._is_recording = False
         self._is_paused = False
@@ -586,21 +603,58 @@ Whisper model, which handles Swedish lectures with high accuracy.
         self._pause_btn.configure(state="disabled", text="⏸  Pause", bg=BG_PANEL, fg=FG)
         self._rec_status.configure(text="Processing…", fg=WARNING)
 
+        # Stop the chunk timer so no new periodic chunks fire.
+        if self._chunk_manager is not None:
+            self._chunk_manager.stop()
+            self._chunk_manager = None
+
+        api_key = self._api_key_var.get().strip()
+
         def finish() -> None:
             try:
                 self._audio_file = self.capturer.stop()
+            except Exception as exc:
+                msg = str(exc)
+                self.root.after(0, lambda: self._show_error(msg))
+                return
+
+            # Check whether there are remaining frames since the last chunk.
+            try:
+                has_audio = os.path.getsize(self._audio_file) > 44  # WAV header = 44 bytes
+            except OSError:
+                has_audio = False
+
+            if has_audio and api_key:
+                # Auto-transcribe the final (partial) chunk so nothing is lost.
+                self.root.after(
+                    0,
+                    lambda: self._rec_status.configure(
+                        text="Transcribing final chunk…", fg=WARNING
+                    ),
+                )
+                try:
+                    result = transcribe(self._audio_file, api_key)
+                    self.root.after(0, lambda: self._show_result(result))
+                    self.root.after(
+                        0,
+                        lambda: self._rec_status.configure(
+                            text="All chunks transcribed.", fg=SUCCESS
+                        ),
+                    )
+                except Exception as exc:
+                    msg = str(exc)
+                    self.root.after(0, lambda: self._show_error(msg))
+            else:
                 self.root.after(
                     0,
                     lambda: self._rec_status.configure(
                         text="Recording saved. Ready to transcribe.", fg=SUCCESS
                     ),
                 )
-                self.root.after(
-                    0, lambda: self._rec_transcribe_btn.configure(state="normal")
-                )
-            except Exception as exc:
-                msg = str(exc)
-                self.root.after(0, lambda: self._show_error(msg))
+                if has_audio:
+                    self.root.after(
+                        0, lambda: self._rec_transcribe_btn.configure(state="normal")
+                    )
 
         threading.Thread(target=finish, daemon=True).start()
 

@@ -23,6 +23,7 @@ class AudioCapture:
         self._thread: Optional[threading.Thread] = None
         self._error: Optional[str] = None
         self._device: Optional[int] = None
+        self._frames_lock = threading.Lock()
 
     # ------------------------------------------------------------------
     # Public API
@@ -101,9 +102,22 @@ class AudioCapture:
             ) as stream:
                 while self.recording:
                     data, _ = stream.read(self.BLOCKSIZE)
-                    self.frames.append(data.copy())
+                    with self._frames_lock:
+                        self.frames.append(data.copy())
         except Exception as exc:
             self._error = str(exc)
+
+    def take_chunk(self) -> list:
+        """Atomically return current frames and clear the buffer.
+
+        Called by :class:`~chunked_transcription.ChunkedTranscriptionManager`
+        to extract audio accumulated since the previous chunk without dropping
+        any frames that arrive concurrently from the recording thread.
+        """
+        with self._frames_lock:
+            frames = self.frames[:]
+            self.frames = []
+        return frames
 
     def _save_to_temp(self) -> str:
         tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
@@ -111,6 +125,8 @@ class AudioCapture:
             wf.setnchannels(self.CHANNELS)
             wf.setsampwidth(2)  # 16-bit
             wf.setframerate(self.SAMPLE_RATE)
-            if self.frames:
-                wf.writeframes(np.concatenate(self.frames).tobytes())
+            with self._frames_lock:
+                frames = self.frames[:]
+            if frames:
+                wf.writeframes(np.concatenate(frames).tobytes())
         return tmp.name
