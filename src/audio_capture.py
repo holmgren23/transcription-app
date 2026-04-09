@@ -1,8 +1,9 @@
 import platform
 import tempfile
 import threading
+import time
 import wave
-from typing import Optional
+from typing import Callable, Optional
 
 import numpy as np
 import sounddevice as sd
@@ -16,6 +17,11 @@ class AudioCapture:
     DTYPE = "int16"
     BLOCKSIZE = 1024
 
+    # RMS amplitude below which a block is considered silent (int16 scale 0–32767)
+    SILENCE_THRESHOLD: int = 100
+    # Seconds of continuous silence before the on_silence callback fires
+    SILENCE_TIMEOUT: float = 60.0
+
     def __init__(self) -> None:
         self.recording = False
         self.paused = False
@@ -24,18 +30,39 @@ class AudioCapture:
         self._error: Optional[str] = None
         self._device: Optional[int] = None
         self._frames_lock = threading.Lock()
+        self._on_silence: Optional[Callable[[], None]] = None
+        # Allow tests / callers to override these per-instance
+        self.silence_threshold: int = self.SILENCE_THRESHOLD
+        self.silence_timeout: float = self.SILENCE_TIMEOUT
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def start(self, device: Optional[int] = None) -> None:
-        """Begin recording from *device* (None = default input)."""
+    def start(
+        self,
+        device: Optional[int] = None,
+        on_silence: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """Begin recording from *device* (None = default input).
+
+        Parameters
+        ----------
+        device:
+            sounddevice device index, or None for the system default.
+        on_silence:
+            Optional callable invoked (from the recording thread) when no audio
+            above :attr:`silence_threshold` is detected for :attr:`silence_timeout`
+            seconds.  The callback should be thread-safe (e.g. schedule work via
+            ``root.after``) and must not call :meth:`stop` directly, as that
+            would deadlock.
+        """
         self.recording = True
         self.paused = False
         self.frames = []
         self._error = None
         self._device = device
+        self._on_silence = on_silence
         self._thread = threading.Thread(
             target=self._record_loop, args=(device,), daemon=True
         )
@@ -92,6 +119,8 @@ class AudioCapture:
     # ------------------------------------------------------------------
 
     def _record_loop(self, device: Optional[int]) -> None:
+        on_silence = self._on_silence
+        last_active = time.monotonic()
         try:
             with sd.InputStream(
                 samplerate=self.SAMPLE_RATE,
@@ -104,6 +133,14 @@ class AudioCapture:
                     data, _ = stream.read(self.BLOCKSIZE)
                     with self._frames_lock:
                         self.frames.append(data.copy())
+
+                    # Silence detection
+                    rms = float(np.sqrt(np.mean(data.astype(np.float32) ** 2)))
+                    if rms > self.silence_threshold:
+                        last_active = time.monotonic()
+                    elif on_silence and (time.monotonic() - last_active) > self.silence_timeout:
+                        on_silence()
+                        break
         except Exception as exc:
             self._error = str(exc)
 

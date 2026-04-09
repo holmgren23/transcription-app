@@ -2,6 +2,7 @@
 
 import sys
 import os
+import threading
 import time
 from unittest.mock import MagicMock, patch
 
@@ -191,3 +192,92 @@ def test_take_chunk_thread_safe_during_recording():
         cap.stop()
     # Just verify it returns a list and doesn't crash
     assert isinstance(frames, list)
+
+
+# ---------------------------------------------------------------------------
+# Silence detection tests
+# ---------------------------------------------------------------------------
+
+def test_silence_detection_fires_callback_after_timeout():
+    """on_silence is called when audio stays below threshold for silence_timeout."""
+    cap = AudioCapture()
+    cap.silence_threshold = 30000  # essentially everything is "silent"
+    cap.silence_timeout = 0.05    # 50 ms for fast test
+
+    silence_event = threading.Event()
+
+    with patch("audio_capture.sd.InputStream") as mock_cls:
+        mock_cls.return_value = _mock_stream()  # returns zeros → always silent
+        cap.start(on_silence=silence_event.set)
+        fired = silence_event.wait(timeout=1.0)
+
+    assert fired, "on_silence should have been called within 1 second"
+
+
+def test_silence_detection_not_fired_when_audio_is_loud():
+    """on_silence is NOT called when audio consistently exceeds the threshold."""
+    cap = AudioCapture()
+    cap.silence_threshold = 10     # very low threshold → loud signal
+    cap.silence_timeout = 0.05
+
+    # Return a loud (non-zero) signal
+    loud_stream = _mock_stream()
+    loud_frame = np.full(
+        (AudioCapture.BLOCKSIZE, AudioCapture.CHANNELS),
+        1000,  # well above threshold of 10
+        dtype=AudioCapture.DTYPE,
+    )
+    loud_stream.read.return_value = (loud_frame, False)
+
+    silence_called = threading.Event()
+
+    with patch("audio_capture.sd.InputStream") as mock_cls:
+        mock_cls.return_value = loud_stream
+        cap.start(on_silence=silence_called.set)
+        fired = silence_called.wait(timeout=0.3)
+        cap.stop()
+
+    assert not fired, "on_silence must not fire when audio is loud"
+
+
+def test_silence_detection_stops_recording_loop():
+    """After on_silence fires the recording loop exits (recording stops)."""
+    cap = AudioCapture()
+    cap.silence_threshold = 30000
+    cap.silence_timeout = 0.05
+
+    with patch("audio_capture.sd.InputStream") as mock_cls:
+        mock_cls.return_value = _mock_stream()
+        cap.start(on_silence=lambda: None)
+        # Give the loop time to detect silence and exit
+        time.sleep(0.4)
+
+    # Thread should have finished on its own
+    if cap._thread:
+        cap._thread.join(timeout=1.0)
+    assert not cap._thread.is_alive(), "recording thread should have exited after silence"
+
+
+def test_silence_detection_not_triggered_without_callback():
+    """Without on_silence, sustained silence does not raise or hang."""
+    cap = AudioCapture()
+    cap.silence_threshold = 30000
+    cap.silence_timeout = 0.05
+
+    with patch("audio_capture.sd.InputStream") as mock_cls:
+        mock_cls.return_value = _mock_stream()
+        cap.start()  # no on_silence
+        time.sleep(0.2)
+        cap.stop()  # must not raise
+
+
+def test_start_accepts_on_silence_kwarg():
+    """start() signature accepts on_silence without error."""
+    cap = AudioCapture()
+    callback = MagicMock()
+    with patch("audio_capture.sd.InputStream") as mock_cls:
+        mock_cls.return_value = _mock_stream()
+        cap.start(on_silence=callback)
+        cap.recording = False
+        if cap._thread:
+            cap._thread.join(timeout=1)

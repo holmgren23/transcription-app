@@ -2,6 +2,8 @@ from pathlib import Path
 
 import openai
 
+from hallucination_filter import clean_transcript
+
 # Whisper API file size limit (25 MB)
 MAX_FILE_BYTES = 25 * 1024 * 1024
 
@@ -64,4 +66,4 @@ def transcribe(file_path: str, api_key: str, language: str = "sv") -> str:
             language=language,
         )
 
-    return response.text
+    return clean_transcript(response.text)

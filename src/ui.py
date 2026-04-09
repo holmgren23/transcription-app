@@ -70,6 +70,7 @@ class TranscriptionApp:
         self._audio_file: Optional[str] = None
         self._upload_file: Optional[str] = None
         self._chunk_manager: Optional[ChunkedTranscriptionManager] = None
+        self._timer_after_id: Optional[str] = None
 
         self._setup_window()
         _configure_styles(root)
@@ -185,9 +186,41 @@ class TranscriptionApp:
             command=self._refresh_devices,
         ).pack(side="left", padx=(8, 0))
 
+        # Timer input
+        timer_frame = tk.Frame(parent, bg=BG)
+        timer_frame.grid(row=2, column=0, sticky="w", **pad)
+
+        tk.Label(
+            timer_frame,
+            text="Max duration (min):",
+            font=FONT_LABEL,
+            bg=BG,
+            fg=FG,
+        ).pack(side="left", padx=(0, 8))
+
+        self._timer_var = tk.StringVar(value="")
+        tk.Entry(
+            timer_frame,
+            textvariable=self._timer_var,
+            width=6,
+            font=FONT_MONO,
+            bg=BG_ENTRY,
+            fg=FG,
+            insertbackground=FG,
+            relief="flat",
+        ).pack(side="left")
+
+        tk.Label(
+            timer_frame,
+            text="(blank = no limit)",
+            font=FONT_LABEL,
+            bg=BG,
+            fg=FG_DIM,
+        ).pack(side="left", padx=(8, 0))
+
         # Record button + status
         rec_frame = tk.Frame(parent, bg=BG)
-        rec_frame.grid(row=2, column=0, sticky="w", **pad)
+        rec_frame.grid(row=3, column=0, sticky="w", **pad)
 
         self._rec_btn = tk.Button(
             rec_frame,
@@ -241,7 +274,7 @@ class TranscriptionApp:
             state="disabled",
             command=self._transcribe_recording,
         )
-        self._rec_transcribe_btn.grid(row=3, column=0, sticky="w", **pad)
+        self._rec_transcribe_btn.grid(row=4, column=0, sticky="w", **pad)
 
     # ------------------------------------------------------------------
     # Upload tab
@@ -579,7 +612,22 @@ Whisper model, which handles Swedish lectures with high accuracy.
         self._rec_status.configure(text="Recording…", fg=DANGER)
         self._rec_transcribe_btn.configure(state="disabled")
 
-        self.capturer.start(device=device)
+        self.capturer.start(
+            device=device,
+            on_silence=lambda: self.root.after(0, self._handle_silence_stop),
+        )
+
+        # Optional recording timer
+        self._timer_after_id = None
+        timer_text = self._timer_var.get().strip()
+        if timer_text:
+            try:
+                minutes = float(timer_text)
+                if minutes > 0:
+                    ms = int(minutes * 60 * 1000)
+                    self._timer_after_id = self.root.after(ms, self._handle_timer_stop)
+            except ValueError:
+                pass  # invalid input → no timer
 
         # Start chunked transcription: every 10 minutes send accumulated audio
         # to Whisper and append the result while recording continues.
@@ -602,6 +650,11 @@ Whisper model, which handles Swedish lectures with high accuracy.
         self._rec_btn.configure(text="⏺  Start Recording", bg=ACCENT, fg=BG)
         self._pause_btn.configure(state="disabled", text="⏸  Pause", bg=BG_PANEL, fg=FG)
         self._rec_status.configure(text="Processing…", fg=WARNING)
+
+        # Cancel pending timer (if user stopped manually before it fired)
+        if self._timer_after_id is not None:
+            self.root.after_cancel(self._timer_after_id)
+            self._timer_after_id = None
 
         # Stop the chunk timer so no new periodic chunks fire.
         if self._chunk_manager is not None:
@@ -657,6 +710,24 @@ Whisper model, which handles Swedish lectures with high accuracy.
                     )
 
         threading.Thread(target=finish, daemon=True).start()
+
+    def _handle_timer_stop(self) -> None:
+        """Called by root.after when the user's recording timer expires."""
+        if not self._is_recording:
+            return
+        self._timer_after_id = None
+        self._rec_status.configure(text="Timer expired — stopping…", fg=WARNING)
+        self._stop_recording()
+
+    def _handle_silence_stop(self) -> None:
+        """Called by root.after when sustained silence is detected."""
+        if not self._is_recording:
+            return
+        self._stop_recording()
+        messagebox.showinfo(
+            "Recording Stopped",
+            "No audio detected for 60 seconds.\nRecording stopped automatically.",
+        )
 
     def _toggle_pause(self) -> None:
         if not self._is_paused:
